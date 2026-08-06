@@ -1,0 +1,4 @@
+target_repository=IPS-Stuttgart/Causal4D
+target_sha=914ff7b88e079df28d2d3824c97926d6e3526ae8
+action=ruff-format,ruff-safe-fix
+trigger_revision=1
