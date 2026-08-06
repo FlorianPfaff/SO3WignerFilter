@@ -1,0 +1,9 @@
+target_repository=IPS-Stuttgart/Causal4D
+target_sha=fa6a64b2442474321e453e9e8fdccd591e0a282d
+profile=smoke
+primary_seeds=5
+stress_seeds_per_non_nominal_scenario=3
+latent_contact_seeds=2
+dynamic_contact_seeds=10
+bootstrap_resamples=500
+trigger_revision=1
