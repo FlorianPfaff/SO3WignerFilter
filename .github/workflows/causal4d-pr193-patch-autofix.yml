@@ -1,0 +1,100 @@
+name: Causal4D PR 193 interval patch autofix
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".causal4d-pr193-autofix-trigger"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: causal4d-pr193-autofix-${{ github.event.pull_request.number }}-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  TARGET_SHA: 914ff7b88e079df28d2d3824c97926d6e3526ae8
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  autofix:
+    name: Deterministic Ruff formatting and safe fixes
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact Causal4D patch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: IPS-Stuttgart/Causal4D
+          ref: ${{ env.TARGET_SHA }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install exact development tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C target rev-parse HEAD)" = "${TARGET_SHA}"
+          python -m venv .causal4d-pr193-autofix-venv
+          echo "VIRTUAL_ENV=${PWD}/.causal4d-pr193-autofix-venv" >> "${GITHUB_ENV}"
+          echo "${PWD}/.causal4d-pr193-autofix-venv/bin" >> "${GITHUB_PATH}"
+          .causal4d-pr193-autofix-venv/bin/python -m pip install --upgrade pip
+          .causal4d-pr193-autofix-venv/bin/python -m pip install -e "./target[dev]"
+          .causal4d-pr193-autofix-venv/bin/python -m pip check
+
+      - name: Apply deterministic formatting and safe lint fixes
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            src/causal4d/real_analysis_interval_diagnostics.py
+            src/causal4d/cli/real_analysis_interval_diagnostics.py
+            tests/test_real_analysis_interval_diagnostics.py
+          )
+          python -m ruff format "${files[@]}"
+          python -m ruff check --fix "${files[@]}"
+          python -m ruff format "${files[@]}"
+          git diff --check
+          python -m ruff check "${files[@]}" \
+            | tee "${GITHUB_WORKSPACE}/ruff-check.txt"
+          python -m ruff format --check "${files[@]}" \
+            | tee "${GITHUB_WORKSPACE}/ruff-format.txt"
+          git diff -- "${files[@]}" \
+            > "${GITHUB_WORKSPACE}/autofix.patch"
+
+      - name: Stage formatted files for transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p autofix/src/causal4d/cli autofix/tests
+          cp target/src/causal4d/real_analysis_interval_diagnostics.py \
+            autofix/src/causal4d/
+          cp target/src/causal4d/cli/real_analysis_interval_diagnostics.py \
+            autofix/src/causal4d/cli/
+          cp target/tests/test_real_analysis_interval_diagnostics.py \
+            autofix/tests/
+          cp ruff-check.txt ruff-format.txt autofix.patch autofix/
+
+      - name: Upload formatted patch files
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: causal4d-pr193-autofix-${{ github.run_id }}
+          path: autofix/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove isolated environment
+        if: always()
+        run: rm -rf .causal4d-pr193-autofix-venv
