@@ -1,0 +1,125 @@
+name: Causal4D PR 193 interval diagnostics validation
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".causal4d-pr193-patch-trigger"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: causal4d-pr193-patch-${{ github.event.pull_request.number }}-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  TARGET_SHA: 914ff7b88e079df28d2d3824c97926d6e3526ae8
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONHASHSEED: "0"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  validate:
+    name: Lint, type, test, package, and installed CLI
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out exact Causal4D patch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: IPS-Stuttgart/Causal4D
+          ref: ${{ env.TARGET_SHA }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify exact clean target and install development stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C target rev-parse HEAD)" = "${TARGET_SHA}"
+          test -z "$(git -C target status --short)"
+          python -m venv .causal4d-pr193-patch-venv
+          echo "VIRTUAL_ENV=${PWD}/.causal4d-pr193-patch-venv" >> "${GITHUB_ENV}"
+          echo "${PWD}/.causal4d-pr193-patch-venv/bin" >> "${GITHUB_PATH}"
+          .causal4d-pr193-patch-venv/bin/python -m pip install --upgrade pip
+          .causal4d-pr193-patch-venv/bin/python -m pip install -e "./target[dev]"
+          .causal4d-pr193-patch-venv/bin/python -m pip check
+          mkdir -p work/causal4d-pr193-patch
+          .causal4d-pr193-patch-venv/bin/python -m pip freeze --all \
+            > work/causal4d-pr193-patch/pip-freeze.txt
+
+      - name: Run formatting, syntax, lint, and typing checks
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check "${TARGET_SHA}^" "${TARGET_SHA}"
+          PYTHONPYCACHEPREFIX="${RUNNER_TEMP}/pr193-patch-syntax" \
+            python -W error::SyntaxWarning -m compileall -q -f src tests
+          python -m ruff format --check \
+            src/causal4d/real_analysis_interval_diagnostics.py \
+            src/causal4d/cli/real_analysis_interval_diagnostics.py \
+            tests/test_real_analysis_interval_diagnostics.py
+          python -m ruff check .
+          python -m mypy --python-version 3.12 \
+            src/causal4d/real_analysis_interval_diagnostics.py \
+            src/causal4d/cli/real_analysis_interval_diagnostics.py
+
+      - name: Run focused and complete core tests
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest -q \
+            tests/test_real_analysis_interval_diagnostics.py \
+            tests/test_real_analysis_reporting.py \
+            --junitxml="${GITHUB_WORKSPACE}/work/causal4d-pr193-patch/focused.xml"
+          python -m pytest \
+            --junitxml="${GITHUB_WORKSPACE}/work/causal4d-pr193-patch/full.xml"
+
+      - name: Build and validate distributions
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build dist
+          python -m build
+          python -m twine check dist/*
+          cp dist/* "${GITHUB_WORKSPACE}/work/causal4d-pr193-patch/"
+
+      - name: Verify installed companion CLI from wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel="$(find target/dist -maxdepth 1 -name '*.whl' -print -quit)"
+          clean_venv="${RUNNER_TEMP}/causal4d-pr193-installed-${GITHUB_RUN_ID}"
+          python -m venv "${clean_venv}"
+          "${clean_venv}/bin/python" -m pip install --upgrade pip
+          "${clean_venv}/bin/python" -m pip install "${wheel}"
+          "${clean_venv}/bin/python" -m pip check
+          "${clean_venv}/bin/python" \
+            -m causal4d.cli.real_analysis_interval_diagnostics --help \
+            | tee work/causal4d-pr193-patch/installed-cli-help.txt
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: causal4d-pr193-interval-patch-${{ github.run_id }}
+          path: work/causal4d-pr193-patch/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove isolated environment
+        if: always()
+        run: rm -rf .causal4d-pr193-patch-venv
