@@ -1,0 +1,158 @@
+name: Causal4D PR 193 scientific study
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".causal4d-pr193-trigger"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: causal4d-pr193-scientific-study
+  cancel-in-progress: false
+
+env:
+  TARGET_SHA: fa6a64b2442474321e453e9e8fdccd591e0a282d
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONHASHSEED: "0"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  study:
+    name: Design audit and controlled replication
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out temporary harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: harness
+          fetch-depth: 0
+          persist-credentials: true
+          clean: true
+
+      - name: Check out immutable Causal4D target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: IPS-Stuttgart/Causal4D
+          ref: ${{ env.TARGET_SHA }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Verify immutable target and install exact package
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C target rev-parse HEAD)" = "${TARGET_SHA}"
+          test -z "$(git -C target status --short)"
+          python -m venv .causal4d-pr193-venv
+          echo "VIRTUAL_ENV=${PWD}/.causal4d-pr193-venv" >> "${GITHUB_ENV}"
+          echo "${PWD}/.causal4d-pr193-venv/bin" >> "${GITHUB_PATH}"
+          .causal4d-pr193-venv/bin/python -m pip install --upgrade pip
+          .causal4d-pr193-venv/bin/python -m pip install -e ./target
+          .causal4d-pr193-venv/bin/python -m pip check
+          mkdir -p work/causal4d-pr193
+          .causal4d-pr193-venv/bin/python -m pip freeze --all \
+            > work/causal4d-pr193/pip-freeze.txt
+          git -C target reset --hard "${TARGET_SHA}"
+          git -C target clean -ffdx
+          test "$(git -C target rev-parse HEAD)" = "${TARGET_SHA}"
+          test -z "$(git -C target status --short)"
+
+      - name: Run source-only audit and standard controlled study
+        shell: bash
+        run: |
+          set +e
+          python harness/run_causal4d_pr193_study.py \
+            --target-root target \
+            --output-root work/causal4d-pr193 \
+            --controlled-profile standard \
+            > work/causal4d-pr193/console.log 2>&1
+          rc=$?
+          echo "STUDY_RC=${rc}" >> "${GITHUB_ENV}"
+          cat work/causal4d-pr193/console.log
+          exit 0
+
+      - name: Publish compact, content-addressed results
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          destination="harness/results/causal4d-pr193/latest"
+          rm -rf "${destination}"
+          mkdir -p "${destination}/controlled-standard"
+          for file in \
+            study-summary.json \
+            registered-design-power-fragility.json \
+            registered-design-power-fragility.md; do
+            if [[ -f "work/causal4d-pr193/${file}" ]]; then
+              cp "work/causal4d-pr193/${file}" "${destination}/${file}"
+            fi
+          done
+          for file in summary.json summary.md manifest.json timings.csv; do
+            if [[ -f "work/causal4d-pr193/controlled-standard/${file}" ]]; then
+              cp "work/causal4d-pr193/controlled-standard/${file}" \
+                "${destination}/controlled-standard/${file}"
+            fi
+          done
+          if [[ ! -f "${destination}/study-summary.json" ]]; then
+            python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          path = Path("harness/results/causal4d-pr193/latest/study-summary.json")
+          path.write_text(
+              json.dumps(
+                  {
+                      "schema_version": 1,
+                      "artifact_kind": "Causal4DPR193ScientificStudyFailure",
+                      "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+                      "target_sha": os.environ.get("TARGET_SHA"),
+                      "study_returncode": int(os.environ.get("STUDY_RC", "99")),
+                      "claim_ready": False,
+                  },
+                  indent=2,
+                  sort_keys=True,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+          echo "${GITHUB_RUN_ID}" > harness/results/causal4d-pr193/LATEST_RUN.txt
+          git -C harness config user.name "github-actions[bot]"
+          git -C harness config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C harness add results/causal4d-pr193
+          git -C harness commit -m \
+            "Record Causal4D PR 193 study ${GITHUB_RUN_ID}"
+          git -C harness push origin HEAD:main
+
+      - name: Upload complete scientific bundle
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: causal4d-pr193-scientific-${{ github.run_id }}
+          path: work/causal4d-pr193/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Enforce scientific study success
+        if: always()
+        shell: bash
+        run: exit "${STUDY_RC:-99}"
+
+      - name: Remove isolated environment
+        if: always()
+        shell: bash
+        run: rm -rf .causal4d-pr193-venv
