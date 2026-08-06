@@ -64,7 +64,7 @@ jobs:
           .causal4d-pr193-design-venv/bin/python -m pip install numpy scipy
           .causal4d-pr193-design-venv/bin/python -m pip check
           mkdir -p work/causal4d-pr193-design
-          python - <<'PY'
+          .causal4d-pr193-design-venv/bin/python - <<'PY'
           import hashlib
           import json
           import os
