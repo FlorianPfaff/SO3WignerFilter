@@ -1,0 +1,5 @@
+target_repository=IPS-Stuttgart/Causal4D
+target_sha=d0532b851567bfb298d7ef9b2f04e33d1e37a26a
+validation=ruff,mypy,focused-pytest,full-pytest,build,twine,installed-cli
+trigger_revision=2
+formatted_with_run=31093043976
