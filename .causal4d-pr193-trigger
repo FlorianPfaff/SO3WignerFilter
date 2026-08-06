@@ -3,5 +3,5 @@ target_sha=fa6a64b2442474321e453e9e8fdccd591e0a282d
 protocol_id=causal4d-sloth-multi-action-v1
 study=registered-design-audit,controlled-standard
 simulation_draws_per_score_family=200000
-trigger_revision=2
-trigger_mode=merged-pull-request
+trigger_revision=3
+trigger_mode=observable-pull-request
