@@ -1,0 +1,84 @@
+name: Causal4D PR 193 controlled smoke study
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".causal4d-pr193-smoke-trigger"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: causal4d-pr193-smoke-${{ github.event.pull_request.number }}-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  TARGET_SHA: fa6a64b2442474321e453e9e8fdccd591e0a282d
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONHASHSEED: "0"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  controlled-smoke:
+    name: Immutable controlled smoke replication
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    steps:
+      - name: Check out immutable Causal4D target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: IPS-Stuttgart/Causal4D
+          ref: ${{ env.TARGET_SHA }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install immutable target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C target rev-parse HEAD)" = "${TARGET_SHA}"
+          test -z "$(git -C target status --short)"
+          python -m venv .causal4d-pr193-smoke-venv
+          echo "VIRTUAL_ENV=${PWD}/.causal4d-pr193-smoke-venv" >> "${GITHUB_ENV}"
+          echo "${PWD}/.causal4d-pr193-smoke-venv/bin" >> "${GITHUB_PATH}"
+          .causal4d-pr193-smoke-venv/bin/python -m pip install --upgrade pip
+          .causal4d-pr193-smoke-venv/bin/python -m pip install -e ./target
+          .causal4d-pr193-smoke-venv/bin/python -m pip check
+          mkdir -p work/causal4d-pr193-smoke
+          .causal4d-pr193-smoke-venv/bin/python -m pip freeze --all \
+            > work/causal4d-pr193-smoke/pip-freeze.txt
+          git -C target reset --hard "${TARGET_SHA}"
+          git -C target clean -ffdx
+          test "$(git -C target rev-parse HEAD)" = "${TARGET_SHA}"
+          test -z "$(git -C target status --short)"
+
+      - name: Run controlled smoke profile
+        shell: bash
+        run: |
+          set -euo pipefail
+          python target/scripts/ci/run_self_hosted_evaluation.py \
+            --profile smoke \
+            --output-dir work/causal4d-pr193-smoke/results \
+            | tee work/causal4d-pr193-smoke/console.log
+
+      - name: Upload controlled smoke bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: causal4d-pr193-controlled-smoke-${{ github.run_id }}
+          path: work/causal4d-pr193-smoke/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove isolated environment
+        if: always()
+        run: rm -rf .causal4d-pr193-smoke-venv
