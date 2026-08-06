@@ -1,0 +1,6 @@
+target_repository=IPS-Stuttgart/Causal4D
+target_sha=fa6a64b2442474321e453e9e8fdccd591e0a282d
+protocol_id=causal4d-sloth-multi-action-v1
+simulation_draws_per_score_family=200000
+score_family_count=5
+trigger_revision=1
