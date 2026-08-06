@@ -1,0 +1,142 @@
+name: Causal4D PR 193 registered-design audit
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths:
+      - ".causal4d-pr193-design-trigger"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: causal4d-pr193-design-${{ github.event.pull_request.number }}-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  TARGET_SHA: fa6a64b2442474321e453e9e8fdccd591e0a282d
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONHASHSEED: "0"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  design-audit:
+    name: Power, precision, and calibration fragility
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    steps:
+      - name: Check out trusted harness from main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: harness
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Check out immutable Causal4D target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: IPS-Stuttgart/Causal4D
+          ref: ${{ env.TARGET_SHA }}
+          path: target
+          fetch-depth: 0
+          persist-credentials: false
+          clean: true
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install numerical dependencies and run audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C target rev-parse HEAD)" = "${TARGET_SHA}"
+          test -z "$(git -C target status --short)"
+          python -m venv .causal4d-pr193-design-venv
+          echo "VIRTUAL_ENV=${PWD}/.causal4d-pr193-design-venv" >> "${GITHUB_ENV}"
+          echo "${PWD}/.causal4d-pr193-design-venv/bin" >> "${GITHUB_PATH}"
+          .causal4d-pr193-design-venv/bin/python -m pip install --upgrade pip
+          .causal4d-pr193-design-venv/bin/python -m pip install numpy scipy
+          .causal4d-pr193-design-venv/bin/python -m pip check
+          mkdir -p work/causal4d-pr193-design
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          sys.path.insert(0, str(Path("harness").resolve()))
+          from run_causal4d_pr193_study import (
+              PROTOCOL_DESIGN_SHA256,
+              PROTOCOL_ID,
+              SIMULATION_DRAWS,
+              TARGET_SHA,
+              build_design_audit,
+              write_design_markdown,
+              write_json,
+          )
+
+          output = Path("work/causal4d-pr193-design")
+          audit = build_design_audit()
+          audit_path = output / "registered-design-power-fragility.json"
+          write_json(audit_path, audit)
+          write_design_markdown(
+              output / "registered-design-power-fragility.md", audit
+          )
+          summary = {
+              "schema_version": 1,
+              "artifact_kind": "Causal4DPR193RegisteredDesignAuditSummary",
+              "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+              "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "target_sha": TARGET_SHA,
+              "protocol_id": PROTOCOL_ID,
+              "protocol_design_sha256": PROTOCOL_DESIGN_SHA256,
+              "simulation_draws_per_score_family": SIMULATION_DRAWS,
+              "score_family_count": len(
+                  audit["execution_block_calibration"]["fragility_scenarios"]
+              ),
+              "total_simulated_calibration_panels": (
+                  SIMULATION_DRAWS
+                  * len(
+                      audit["execution_block_calibration"][
+                          "fragility_scenarios"
+                      ]
+                  )
+              ),
+              "precision_and_minimum_detectable_effect": audit[
+                  "precision_and_minimum_detectable_effect"
+              ],
+              "calibration_boundary": audit[
+                  "execution_block_calibration"
+              ],
+              "audit_sha256": hashlib.sha256(
+                  audit_path.read_bytes()
+              ).hexdigest(),
+              "uses_target_outcomes": False,
+              "may_change_registered_threshold": False,
+              "claim_boundary": (
+                  "Source-only design diagnostic; not a substitute for the "
+                  "registered 18-session/36-execution physical result."
+              ),
+          }
+          write_json(output / "summary.json", summary)
+          print(json.dumps(summary, indent=2, sort_keys=True))
+          PY
+
+      - name: Upload registered-design audit
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: causal4d-pr193-design-audit-${{ github.run_id }}
+          path: work/causal4d-pr193-design/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove isolated environment
+        if: always()
+        run: rm -rf .causal4d-pr193-design-venv
